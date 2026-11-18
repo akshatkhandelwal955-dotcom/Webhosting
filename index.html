@@ -1695,7 +1695,7 @@
                     : pid === 'free'
                     ? `<button type="button" disabled class="w-full py-2.5 rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-400 text-xs font-bold">Starter Tier</button>`
                     : `<button type="button" data-unlock-plan="${pid}" class="w-full py-2.5 rounded-xl text-xs font-bold ${canAfford ? 'multi-grad-btn text-white' : 'bg-blue-600 hover:bg-blue-500 text-white'}">${canAfford ? 'Subscribe 30 Days (🪙 ' + p.coinCost.toLocaleString() + ')' : 'Need 🪙 ' + (p.coinCost - state.user.coins).toLocaleString() + ' More Coins'}</button>`)
-                : `<button type="button" data-action="go-choose" class="w-full py-2.5 rounded-xl ${pid === 'standard' ? 'multi-grad-btn text-white' : 'border border-slate-300 dark:border-slate-700'} text-xs font-bold hover:opacity-90 transition">${pid === 'free' ? 'Try Free Preview' : 'Subscribe Monthly'}</button>`
+                : `<button type="button" data-action="open-dashboard" data-tab="plans" class="w-full py-2.5 rounded-xl ${pid === 'standard' ? 'multi-grad-btn text-white' : 'border border-slate-300 dark:border-slate-700'} text-xs font-bold hover:opacity-90 transition">${pid === 'free' ? 'Try Free Preview' : 'View Plan Options'}</button>`
               }
             </div>
           </div>`;
@@ -1779,7 +1779,8 @@
           if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(raw)) { toast('Enter a valid domain like mybusiness.com', 'error'); return; }
           let dom = state.domains.find(d => d.name === raw);
           if (!dom) {
-            if (state.domains.length >= getPlan().domains) {
+            const connectedDomainCount = state.domains.filter(d => d.backend || d.verified).length;
+            if (connectedDomainCount >= getPlan().domains) {
               toast(`Your ${getPlan().name} allows ${getPlan().domains} domain(s). Upgrade via Offerwalls for more!`, 'error');
               return;
             }
@@ -1789,6 +1790,7 @@
               registrar: document.getElementById('wizRegSelect').value,
               token: 'aether-verify=' + Math.random().toString(16).slice(2, 14),
               verified: false,
+              backend: false,
               ssl: 'Awaiting DNS',
               dkimValue: 'v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...'
             };
@@ -1832,7 +1834,7 @@
         `;
         mount.querySelectorAll('.wiz-copy').forEach(b => b.addEventListener('click', () => copyText(b.getAttribute('data-copy'))));
         if (!recs.length) {
-          aetherCreateDomain(dom).then(data => { dom.dnsRecords = data.records; saveState(); renderEmailWizard(); }).catch(err => { toast(err?.message || 'Could not load Mailgun DNS records. Configure MAILGUN_API_KEY first.', 'error'); });
+          aetherCreateDomain(dom).then(data => { dom.dnsRecords = data.records; dom.backend = true; saveState(); renderEmailWizard(); }).catch(err => { toast(err?.message || 'Could not load Mailgun DNS records. Configure MAILGUN_API_KEY first.', 'error'); });
         }
         document.getElementById('wizBackDomBtn').addEventListener('click', () => { state.emailWizardStep = 1; renderEmailWizard(); });
         document.getElementById('wizVerifyLiveBtn').addEventListener('click', async () => {

@@ -488,6 +488,29 @@
       if (error) throw error;
       return data;
     }
+    async function aetherVerifyDomain(dom) {
+      const user = await aetherBackendUser();
+      if (!user || !aetherSupabase) throw new Error('Sign in to Supabase before verifying a domain');
+      const { data: row, error: upsertError } = await aetherSupabase.from('custom_domains').upsert({
+        user_id: user.id,
+        domain: dom.name.toLowerCase(),
+        verification_token: dom.token || null,
+        state: 'pending'
+      }, { onConflict: 'user_id,domain' }).select('id').single();
+      if (upsertError) throw upsertError;
+      const { data, error } = await aetherSupabase.functions.invoke('verify-domain', { body: { domainId: row.id } });
+      if (error) throw error;
+      if (!data?.verified) throw new Error(data?.message || 'Mailgun has not verified the DNS records yet');
+      return data;
+    }
+    async function aetherCreateDomain(dom) {
+      const user = await aetherBackendUser();
+      if (!user || !aetherSupabase) throw new Error('Sign in to Supabase before connecting a domain');
+      const { data, error } = await aetherSupabase.functions.invoke('create-domain', { body: { domain: dom.name } });
+      if (error) throw error;
+      if (!data?.records) throw new Error(data?.error || 'Mailgun did not return DNS records');
+      return data;
+    }
     function authGateHtml() {
       return `<div id="aetherAuthGate" class="fixed inset-0 z-[200] bg-navy-950/95 flex items-center justify-center p-5">
         <div class="w-full max-w-md rounded-3xl bg-white dark:bg-navy-900 border border-sky-400/30 shadow-2xl p-7 space-y-5">
@@ -1781,19 +1804,15 @@
 
       const dom = state.domains.find(d => d.id === state.wizardDomainId) || state.domains[0];
       if (step === 2 && dom) {
-        const recs = [
-          { type: 'TXT', host: `_aethercloud.${dom.name}`, val: dom.token },
-          { type: 'MX', host: '@', val: '10 mail.aethercloud.app' },
-          { type: 'TXT (SPF)', host: '@', val: 'v=spf1 mx include:mail.aethercloud.app ~all' },
-          { type: 'TXT (DKIM)', host: `aether1._domainkey.${dom.name}`, val: dom.dkimValue },
-          { type: 'TXT (DMARC)', host: `_dmarc.${dom.name}`, val: `v=DMARC1; p=quarantine; rua=mailto:dmarc@${dom.name}` }
-        ];
+        const dns = dom.dnsRecords || { sending: [], receiving: [], verification: [] };
+        const recs = [...(dns.verification || []), ...(dns.sending || []), ...(dns.receiving || [])].map(r => ({ type: r.record_type || r.type || 'DNS', host: r.name || r.host || '@', val: r.value || r.value || r.record || '' }));
         mount.innerHTML = `
           <div class="max-w-2xl w-full p-7 rounded-3xl bg-white dark:bg-navy-900 border border-slate-200 dark:border-slate-800 shadow-2xl fade-up">
             <div class="text-xs font-bold text-sky-500 uppercase mb-1">Step 2 of 3 · Verify DNS Records</div>
             <h2 class="text-2xl font-extrabold mb-2">Add DNS records for ${escHtml(dom.name)}</h2>
             <p class="text-xs text-slate-500 mb-4">Add these records in ${escHtml(dom.registrar)} so your domain can securely send &amp; receive emails.</p>
             <div class="space-y-2 mb-5 text-xs">
+              ${recs.length ? '' : '<div class="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-600 dark:text-amber-300">Loading the real DNS records from Mailgun…</div>'}
               ${recs.map(r => `
                 <div class="p-3 rounded-xl bg-ice-50 dark:bg-navy-950 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
                   <div class="min-w-0">
@@ -1812,12 +1831,23 @@
           </div>
         `;
         mount.querySelectorAll('.wiz-copy').forEach(b => b.addEventListener('click', () => copyText(b.getAttribute('data-copy'))));
+        if (!recs.length) {
+          aetherCreateDomain(dom).then(data => { dom.dnsRecords = data.records; saveState(); renderEmailWizard(); }).catch(err => { toast(err?.message || 'Could not load Mailgun DNS records. Configure MAILGUN_API_KEY first.', 'error'); });
+        }
         document.getElementById('wizBackDomBtn').addEventListener('click', () => { state.emailWizardStep = 1; renderEmailWizard(); });
         document.getElementById('wizVerifyLiveBtn').addEventListener('click', async () => {
           toast(`Checking live DNS for ${dom.name}...`);
+          const button = document.getElementById('wizVerifyLiveBtn');
+          button.disabled = true;
+          button.textContent = 'Checking Mailgun verification...';
           try {
-            await fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent('_aethercloud.' + dom.name)}&type=TXT`, { headers: { Accept: 'application/dns-json' } });
-          } catch (_) {}
+            await aetherVerifyDomain(dom);
+          } catch (err) {
+            button.disabled = false;
+            button.textContent = 'Verify DNS & Continue →';
+            toast(err?.message || 'DNS verification failed. Add the Mailgun records and try again.', 'error');
+            return;
+          }
           dom.verified = true;
           dom.ssl = 'Active (Auto HTTPS)';
           state.emailWizardStep = 3;
